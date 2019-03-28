@@ -1,0 +1,6 @@
+float32[] angle 
+float32[] speed 
+string[]  jointName 
+int32[]     mode
+--------------------------------
+string dummy

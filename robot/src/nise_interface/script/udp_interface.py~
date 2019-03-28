@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+import rospy
+import time
+import almath
+import sys
+import socket
+import cv2
+import numpy as np
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image
+
+from nise_interface.srv import Interface
+from nise_interface.srv import InterfaceResponse
+
+class UDPClient:
+	def __init__(self, server_ip="192.168.137.119", server_port=5005):
+	    self.server_ip = server_ip
+	    self.server_port = server_port
+	    self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+	def send(self, message, ntimes=1):
+	    if isinstance(message, str):
+	        message = bytes(message, 'UTF-8')
+	    elif isinstance(message, int):
+	        message = bytes(str(message), 'UTF-8')
+	    elif isinstance(message, float):
+	        message = bytes(str(message), 'UTF-8')
+	    elif isinstance(message, np.ndarray):
+	        message = message.tobytes()
+	    for i in range(ntimes):
+	        self.sock.sendto(message, (self.server_ip, self.server_port))
+	    
+class interface:
+	def __init__(self):
+		print "initialize"
+		self.data=0
+		self.UDP_IP = "192.168.137.119"#"127.0.0.1"#
+		self.UDP_PORT = 5005
+		self.bci_IP = "192.168.137.1"#"192.168.137.1"#"127.0.0.1"#
+		self.bci_port = 5005
+		self.video_port = 5006
+		self.stream_img = False
+		self.bridge = CvBridge()
+		self.image_sub = rospy.Subscriber('/nao_robot/naoqi_driver/camera/front/image_raw',Image, self.imagecallback)
+		self.sock2 = socket.socket(socket.AF_INET, # Internet
+                     socket.SOCK_DGRAM) # UDP
+		s = rospy.Service('/interface_request', Interface, self.interface_request)
+		self.server_listener()
+		
+
+	def imagecallback(self, image):
+		
+		
+		if self.stream_img:
+			try:
+				cv_im = self.bridge.imgmsg_to_cv2(image,"bgr8")
+			except CvBridgeError, e:
+				data_str = "CvBridge: {}".format(e);
+				rospy.loginfo(data_str)
+				return
+			im_gray = cv2.cvtColor(cv_im, cv2.COLOR_BGR2GRAY)
+			cv2.imshow('image', cv_im)
+			cv2.waitKey(1)
+			myCli = UDPClient(server_ip=self.bci_IP, server_port=self.video_port)
+			myCli.send(np.uint8(cv2.resize(im_gray,(100,100))))
+
+	def interface_request(self, req):
+		if req.option==42:
+			self.stream_img = not self.stream_img	
+			return 
+		if self.data > 0:
+			self.sock2.sendto("0", (self.bci_IP, self.bci_port))
+			aux = self.data
+			self.data = 0
+			return InterfaceResponse(aux)
+		else:
+			self.sock2.sendto(str(req.option), (self.bci_IP, self.bci_port))
+		return InterfaceResponse(self.data)
+
+	def server_listener(self):
+		sock = socket.socket(socket.AF_INET, # Internet
+				             socket.SOCK_DGRAM) # UDP
+		sock.bind((self.UDP_IP, self.UDP_PORT))
+		while True:
+			data, addr = sock.recvfrom(1024) # buffer size is 1024 bytes
+			if data:
+				self.data = int(data)
+				print("i recieved:",self.data, "this is a ", type(self.data))
+			else:					
+				self.data = 0
+	def server_sender(self, message):	
+		self.sock2.sendto(message, (self.bci_IP, self.bci_port))
+	
+
+if __name__ == '__main__':
+	rospy.init_node('bci_interface')
+	bci_interface=interface()	
+	rospy.spin()

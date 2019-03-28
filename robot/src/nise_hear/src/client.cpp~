@@ -1,0 +1,282 @@
+/**************************************************************************/
+/*                                                                        */
+/* Date: 23.11.2017                                                       */
+/* Author: German Diez Valencia    germandiezvalencia@gmail.com           */
+/*         Daniela Sanchez Lopera  daniela.sanchez.lopera@gmail.com       */
+/* Group A                                                                */
+/* Tutorial 5: Introduction to Joint Control Nao                          */
+/* Humanoid Robotic Systems                                               */
+/**************************************************************************/
+
+
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <stdlib.h>
+#include <ros/ros.h>
+#include "sensor_msgs/JointState.h"
+#include "nise_hear/MoveJoints.h"
+#include <string.h>
+#include <math.h>
+
+/*OpenCV related includes.*/
+#include <cv_bridge/cv_bridge.h>
+#include "opencv2/objdetect/objdetect.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
+
+/*Aruco markers*/
+#include <aruco/aruco.h>
+#include <aruco/cvdrawingutils.h>
+
+# define M_PI           3.14159265358979323846  /* pi */
+
+using namespace aruco;
+using namespace std;
+using namespace cv;
+bool flag=true;
+
+
+class Nao_control
+{
+public:
+    // ros handler
+    ros::NodeHandle nh_;
+
+    // subscriber to joint states
+    ros::Subscriber sensor_data_sub;
+    ros::Subscriber moveJoint;
+    ros::ServiceClient client;
+    ros::Subscriber img_ros;
+    Mat dist;
+    Mat cameraP;
+    /*Store current values of yaw and peach to calculate absolute position*/
+    float delta_yaw;
+    float delta_pitch;
+
+    Nao_control()
+    {
+        sensor_data_sub = nh_.subscribe("/joint_states",1, &Nao_control::sensorCallback, this);
+        img_ros         = nh_.subscribe("/nao_robot/camera/top/camera/image_raw", 1, &Nao_control::imgCallback, this);
+
+        client = nh_.serviceClient<nise_move_head::MoveJoints>("move_service");
+        
+        /*Options */
+        
+        /*Set manually joint to move */
+        sendManual();
+        
+        /*Exercise 1: Move arms*/
+        //moveArms();
+        
+        /*Exrecise 2: Move Shoulder*/
+        //moveShoulder();
+
+        /*Camera parameters to detect ArUco Markers*/
+        dist=Mat(1,5,CV_32FC1);
+        cameraP=Mat(3,3,CV_32FC1);
+
+        dist.at<float>(0,0)=-0.066494;
+        dist.at<float>(0,1)=0.095481;
+        dist.at<float>(0,2)=-0.000279;
+        dist.at<float>(0,3)=0.002292;
+        dist.at<float>(0,4)=0.000000;
+
+
+        cameraP.at<float>(0,0)=551.543059;
+        cameraP.at<float>(0,1)=0.000000;
+        cameraP.at<float>(0,2)=327.382898;
+        cameraP.at<float>(1,0)=0.000000;
+        cameraP.at<float>(1,1)=553.736023;
+        cameraP.at<float>(1,2)=225.026380;
+        cameraP.at<float>(2,0)=0.000000;
+        cameraP.at<float>(2,1)=0.000000;
+        cameraP.at<float>(2,2)=1.000000;
+
+
+    }
+    ~Nao_control()
+    {
+    }
+
+    /*Send manually parameters to move any joint*/
+    void sendManual(){
+
+        string br;
+        vector<float> angles, speeds;
+        vector<int> modes;
+        vector<string> names;
+        for(;;){
+            float angle,speed;
+            int mode_;
+            string name;
+            /*Get parameters from user*/
+            cout<<"Enter the angle ";
+            cin>>angle;
+            cout<<"Enter the speed ";
+            cin>>speed;
+            cout<<"Enter the name ";
+            cin>>name;
+            cout<<"Enter the mode 1=setAngles | 2=angleInterpolation ";
+            cin>>mode_;
+            cout<<"continue? y/n ";
+            cin>>br;
+            cout<<"Your answer "<<br<<endl;
+            angles.push_back(angle);
+            speeds.push_back(speed);
+            names.push_back(name);
+            modes.push_back(mode_);
+            /*Stop fro loop*/
+            if(br=="n"){
+                cout<<"Your answer "<<br<<endl;
+                break;
+            }
+        }
+        /*Send arrays to the client*/
+        moveJoints(angles,speeds,names,modes);
+    }
+    /*Exercise1: Move arms*/
+    void moveArms(){
+
+      //RArm: RShoulderRoll - RShoulderPitch - RElbowYaw - RElbowRoll - RWristYaw - RHand.
+      //LArm: LShoulderRoll - LShoulderPitch - LElbowYaw - LElbowRoll - LWristYaw - LHand.
+      vector<float> angles= {30,40};
+      vector<float> speeds= {0.2,0.2};
+      vector<int> modes= {1,1};
+      vector<string> names= {"LShoulderRoll", "LElbowYaw"};
+
+      moveJoints(angles,speeds,names,modes);
+    }
+
+    /* Exercise2: Move Shoulder */
+    void moveShoulder(){
+      vector<float> angles= {30,0};
+      vector<float> speeds= {2,1};
+      vector<int> modes= {2,2};
+      vector<string> names= {"LShoulderRoll", "LShoulderPitch"};
+
+      moveJoints(angles,speeds,names,modes);
+
+    }
+
+    /* handler for joint states. Useful way of getting the current yaw and pitch angles */
+    void sensorCallback(const sensor_msgs::JointState::ConstPtr& jointState)
+    {
+      delta_pitch= (jointState)->position[1];
+      delta_yaw=(jointState)->position[0];
+    }
+    /* handler for img */
+    void imgCallback(const sensor_msgs::Image& img_raw)
+    {
+        /* Create the bridge between ros and opencv format*/
+        cv_bridge::CvImagePtr  cv_img_ptr;
+        /* Create matrix for each result image*/
+        Mat image;
+        Mat rotMatrix;
+
+        try{
+           cv_img_ptr = cv_bridge::toCvCopy(img_raw,"bgr8");
+           cv_img_ptr->image.copyTo(image);
+        }
+        catch (cv_bridge::Exception& e){
+           ROS_ERROR("cv_bridge exception from camera: %s", e.what());
+           return;
+        }
+        /*Marker*/
+        MarkerDetector MDetector;
+        vector<Marker> Markers;
+        MDetector.detect(image,Markers);
+        int  sizem= Markers.size(); 
+        /*Positions */       
+        float pos_x,pos_y,pos_z,angleYaw,anglePitch;
+        
+        /*Call service*/
+        vector<float> angles;
+        vector<int> modes;
+        vector<string> names;
+        vector<float> speeds;
+
+        
+        for (int i=0; i<sizem; i++) {
+            Markers[i].calculateExtrinsics(0.04,cameraP,dist);
+            Markers[i].draw(image,Scalar(0,0,255),2);
+            /*3D Coordinates of the marker*/
+            pos_x=-Markers[i].Tvec.at<Vec3f>(0,0)[0]; 
+            pos_y=Markers[i].Tvec.at<Vec3f>(0,0)[1];
+            pos_z=Markers[i].Tvec.at<Vec3f>(0,0)[2];
+            //ROS_INFO_STREAM(Markers[i].Tvec);
+
+
+            /* Calculate angles based on x,y,z */
+            angleYaw= (atan2(pos_x,pos_z)+delta_yaw )*180/M_PI; 
+            anglePitch= (atan2(pos_y,pos_z)+delta_pitch)*180/M_PI; 
+            
+            /*Joint limit checks http://doc.aldebaran.com/2-1/family/robots/joints_robot.html */
+            /*Yaw -119.5 to 119.5*/
+            /*Pitch -38.5 to 29.5*/
+            if(angleYaw>119.5){
+                angleYaw=119.5;
+            }
+            else if (angleYaw<-119.5){
+                angleYaw=-119.5;
+            }
+
+            if(anglePitch>29.5){
+               anglePitch=29.5;
+            }
+            else if (anglePitch<-38.5){
+                anglePitch=-38.5;
+            }
+            
+            /*Exercise 3: Call service*/
+            
+            /*Create arrays*/
+            /*Yaw*/
+            angles.push_back(angleYaw);
+            speeds.push_back(0.5); /*For mode 1-SetAngles()-, please use 0.1, For mode 2 - angleInterpolation: 0.5*/
+            names.push_back("HeadYaw");
+            modes.push_back(1); /*Modes: 1 SetAngles(), 2 angleInterpolation*/
+
+            /*Pitch*/
+            angles.push_back(anglePitch);
+            speeds.push_back(0.5);
+            names.push_back("HeadPitch");
+            modes.push_back(1);
+
+            /*Call service
+            ROS_INFO_STREAM("---------------------");
+            ROS_INFO_STREAM(angles.size());
+            ROS_INFO_STREAM(speeds.size());
+            ROS_INFO_STREAM(names.size());
+            ROS_INFO_STREAM(modes.size());
+            ROS_INFO_STREAM("---------------------");*/
+            moveJoints(angles, speeds, names, modes );
+
+         }      
+        imshow("Original Image", image);
+        waitKey(1);
+    }
+
+    /*Receives all parameters and call the service*/
+    void moveJoints(vector<float> angles, vector<float> speeds, vector<string> names,vector<int> modes ){
+        nise_move_head::MoveJoints srv; 
+        srv.request.angle=angles;
+        srv.request.speed=speeds;
+        srv.request.jointName=names;
+        srv.request.mode=modes;
+
+        //ROS_INFO_STREAM(srv.request);
+        client.call(srv); /*Call to the service*/
+    }
+};
+
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, "nao_tutorial_control_1");
+
+    Nao_control ic;
+
+    ros::spin();
+    return 0;
+}

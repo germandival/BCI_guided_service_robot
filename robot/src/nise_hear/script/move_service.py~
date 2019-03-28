@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+import rospy
+import time
+import almath
+import sys
+from naoqi import ALProxy
+from nise_move_head.srv import MoveJoints
+motionProxy =0;
+
+tts = audio = record = aup = None 
+robot_IP="169.254.254.250"
+robot_PORT=9559
+
+def sendPositionNAO(req):
+	print "sendPositionNAO Script", req
+	global tts, audio, record, aup, robotIP, robot_PORT 
+	# ----------> Connect to robot <----------
+	tts = ALProxy("ALTextToSpeech", robot_IP, robot_PORT)
+	audio = ALProxy("ALAudioDevice", robot_IP, robot_PORT)
+	record = ALProxy("ALAudioRecorder", robot_IP, robot_PORT)
+	aup = ALProxy("ALAudioPlayer", robot_IP, robot_PORT)
+	# ----------> recording <----------
+	print 'start recording...'
+	record_path = '/home/nao/record.wav'
+	record.startMicrophonesRecording(record_path, 'wav', 16000, (0,0,1,0))
+	time.sleep(10)
+	record.stopMicrophonesRecording()
+	print 'record over'
+
+
+	# ----------> playing the recorded file <----------
+	fileID = aup.playFile(record_path, 0.7, 0)
+
+
+if __name__ == '__main__':
+    robotIP="169.254.254.250"#str(sys.argv[1])
+    PORT=9559#int(sys.argv[2])
+    #print ("service declared",sys.argv[2])
+    motionProxy = ALProxy("ALMotion", robotIP, PORT)
+    rospy.init_node('move_joints_server')
+    s = rospy.Service('move_service', MoveJoints, sendPositionNAO)
+    rospy.spin()
